@@ -150,6 +150,12 @@ app.use((err, req, res, next) => {
     .json({ success: false, message: err.message || 'Server error' });
 });
 
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+
+
 app.get('/', (req, res) => {
   res.status(200).send('👋 Hello! GalaxyTravellers backend is live 🚀');
 });
