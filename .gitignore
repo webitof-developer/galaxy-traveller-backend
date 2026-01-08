@@ -41,6 +41,10 @@ build/Release
 node_modules/
 jspm_packages/
 
+# Google Cloud Service Account Keys (sensitive credentials)
+utils/galaxytravelers-493680eab63a.json
+utils/*.json
+
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
 

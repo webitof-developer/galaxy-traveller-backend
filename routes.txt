@@ -1,0 +1,421 @@
+/api/blog
+
+Public
+
+GET /api/blog/
+
+GET /api/blog/:idOrSlug
+
+Moderation
+
+GET /api/blog/moderation
+
+GET /api/blog/moderation/:id
+
+POST /api/blog/moderation
+
+PUT /api/blog/moderation/:id
+
+PATCH /api/blog/moderation/:id
+
+PATCH /api/blog/moderation/:id/status
+
+DELETE /api/blog/moderation/:id
+
+/api/categories
+
+Public
+
+GET /api/categories/
+
+GET /api/categories/:idOrSlug ← (:idOrSlug = tag or _id)
+
+Moderation
+
+GET /api/categories/moderation
+
+GET /api/categories/moderation/:id
+
+POST /api/categories/moderation
+
+PUT /api/categories/moderation/:id
+
+PATCH /api/categories/moderation/:id
+
+PATCH /api/categories/moderation/:id/status
+
+DELETE /api/categories/moderation/:id
+
+/api/destinations
+
+Public
+
+GET /api/destinations/
+
+GET /api/destinations/:idOrSlug
+
+Moderation
+
+GET /api/destinations/moderation
+
+GET /api/destinations/moderation/:id
+
+POST /api/destinations/moderation
+
+PUT /api/destinations/moderation/:id
+
+PATCH /api/destinations/moderation/:id
+
+PATCH /api/destinations/moderation/:id/status
+
+DELETE /api/destinations/moderation/:id
+
+/api/experiences
+
+Public
+
+GET /api/experiences/
+
+GET /api/experiences/:idOrSlug
+
+Moderation
+
+GET /api/experiences/moderation
+
+GET /api/experiences/moderation/:id
+
+POST /api/experiences/moderation
+
+PUT /api/experiences/moderation/:id
+
+PATCH /api/experiences/moderation/:id
+
+PATCH /api/experiences/moderation/:id/status
+
+DELETE /api/experiences/moderation/:id
+
+/api/months
+
+Public
+
+GET /api/months/
+
+GET /api/months/:idOrSlug ← (:idOrSlug = monthTag or _id)
+
+Moderation
+
+GET /api/months/moderation
+
+GET /api/months/moderation/:id
+
+POST /api/months/moderation
+
+PUT /api/months/moderation/:id
+
+PATCH /api/months/moderation/:id
+
+PATCH /api/months/moderation/:id/status
+
+DELETE /api/months/moderation/:id
+
+/api/tour
+
+Public
+
+GET /api/tour/
+
+GET /api/tour/:idOrSlug
+
+Moderation
+
+GET /api/tour/moderation
+
+GET /api/tour/moderation/:id
+
+POST /api/tour/moderation
+
+PUT /api/tour/moderation/:id
+
+PATCH /api/tour/moderation/:id
+
+PATCH /api/tour/moderation/:id/status
+
+DELETE /api/tour/moderation/:id
+
+/api/spotlight
+
+Public
+
+GET /api/spotlight/
+
+GET /api/spotlight/:idOrSlug
+
+Moderation
+
+GET /api/spotlight/moderation
+
+GET /api/spotlight/moderation/:id
+
+POST /api/spotlight/moderation
+
+PUT /api/spotlight/moderation/:id
+
+PATCH /api/spotlight/moderation/:id
+
+PATCH /api/spotlight/moderation/:id/status
+
+DELETE /api/spotlight/moderation/:id
+
+/api/testimonial
+
+Public
+
+GET /api/testimonial/
+
+GET /api/testimonial/:idOrSlug
+
+Moderation
+
+GET /api/testimonial/moderation
+
+GET /api/testimonial/moderation/:id
+
+POST /api/testimonial/moderation
+
+PUT /api/testimonial/moderation/:id
+
+PATCH /api/testimonial/moderation/:id
+
+PATCH /api/testimonial/moderation/:id/status
+
+DELETE /api/testimonial/moderation/:id
+
+/api/campaigns
+
+Public
+
+GET /api/campaigns/
+
+GET /api/campaigns/:idOrSlug
+
+Moderation
+
+GET /api/campaigns/moderation
+
+GET /api/campaigns/moderation/:id
+
+POST /api/campaigns/moderation
+
+PUT /api/campaigns/moderation/:id
+
+PATCH /api/campaigns/moderation/:id
+
+PATCH /api/campaigns/moderation/:id/status
+
+DELETE /api/campaigns/moderation/:id
+
+/api/campaignforms
+
+Public
+
+GET /api/campaignforms/
+
+GET /api/campaignforms/:idOrSlug
+
+Moderation
+
+GET /api/campaignforms/moderation
+
+GET /api/campaignforms/moderation/:id
+
+POST /api/campaignforms/moderation
+
+PUT /api/campaignforms/moderation/:id
+
+PATCH /api/campaignforms/moderation/:id
+
+PATCH /api/campaignforms/moderation/:id/status
+
+DELETE /api/campaignforms/moderation/:id
+
+/api/lead
+
+Public
+
+POST /api/lead/ ← (submit a lead)
+
+Moderation
+
+GET /api/lead/moderation
+
+GET /api/lead/moderation/:id
+
+DELETE /api/lead/moderation/:id
+
+/api/layouts
+
+Public
+
+GET /api/layouts/
+
+GET /api/layouts/:idOrSlug
+
+Moderation
+
+GET /api/layouts/moderation
+
+GET /api/layouts/moderation/:id
+
+POST /api/layouts/moderation
+
+PUT /api/layouts/moderation/:id
+
+PATCH /api/layouts/moderation/:id
+
+PATCH /api/layouts/moderation/:id/status
+
+DELETE /api/layouts/moderation/:id
+
+Site (singleton lists)
+/api/site_destinationsList
+
+Public
+
+GET /api/site_destinationsList/
+
+Moderation (single updater)
+
+PATCH /api/site_destinationsList/moderation
+
+/api/site_experienceslist
+
+Public
+
+GET /api/site_experienceslist/
+
+Moderation (single updater)
+
+PATCH /api/site_experienceslist/moderation
+
+/api/site_tourlist
+
+Public
+
+GET /api/site_tourlist/
+
+Moderation (single updater)
+
+PATCH /api/site_tourlist/moderation
+
+/api/review
+
+Public
+
+GET /api/review/
+
+Moderation (single updater)
+
+PATCH /api/review/moderation
+
+/api/site_features
+
+(if following the standard multi-doc pattern)
+
+Public
+
+GET /api/site_features/
+
+GET /api/site_features/:idOrSlug
+
+Moderation
+
+GET /api/site_features/moderation
+
+GET /api/site_features/moderation/:id
+
+POST /api/site_features/moderation
+
+PUT /api/site_features/moderation/:id
+
+PATCH /api/site_features/moderation/:id
+
+PATCH /api/site_features/moderation/:id/status
+
+DELETE /api/site_features/moderation/:id
+
+/api/site_heroslides
+
+(if following the standard multi-doc pattern)
+
+Public
+
+GET /api/site_heroslides/
+
+GET /api/site_heroslides/:idOrSlug
+
+Moderation
+
+GET /api/site_heroslides/moderation
+
+GET /api/site_heroslides/moderation/:id
+
+POST /api/site_heroslides/moderation
+
+PUT /api/site_heroslides/moderation/:id
+
+PATCH /api/site_heroslides/moderation/:id
+
+PATCH /api/site_heroslides/moderation/:id/status
+
+DELETE /api/site_heroslides/moderation/:id
+
+System / Auth
+/api/roles
+
+GET /api/roles/
+
+GET /api/roles/:id
+
+POST /api/roles/
+
+PUT /api/roles/:id
+
+PATCH /api/roles/:id
+
+DELETE /api/roles/:id
+
+/api/users
+
+GET /api/users/
+
+GET /api/users/:id
+
+POST /api/users/
+
+PUT /api/users/:id
+
+PATCH /api/users/:id
+
+DELETE /api/users/:id
+
+/api/auth
+
+(typical)
+
+POST /api/auth/login
+
+POST /api/auth/register
+
+GET /api/auth/me
+
+POST /api/auth/refresh
+
+POST /api/auth/logout
+
+/api/models
+
+(introspection endpoints as defined in your router)
+
+/api/schema
+
+(schema/metadata endpoints as defined in your router)
