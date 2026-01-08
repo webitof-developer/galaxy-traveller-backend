@@ -151,9 +151,41 @@ app.use((err, req, res, next) => {
 });
 
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+  });
 });
 
+
+app.get('/health/ready', (req, res) => {
+  const mongoState = mongoose.connection.readyState;
+
+  const checks = {
+    mongo: mongoState === 1 ? 'connected' : 'not_connected',
+    env: {
+      MONGO_URI: !!process.env.MONGO_URI,
+      GCS_BUCKET: !!process.env.GCS_BUCKET,
+    },
+  };
+
+  const isReady =
+    mongoState === 1 &&
+    checks.env.MONGO_URI &&
+    checks.env.GCS_BUCKET;
+
+  if (!isReady) {
+    return res.status(503).json({
+      status: 'not_ready',
+      checks,
+    });
+  }
+
+  res.status(200).json({
+    status: 'ready',
+    checks,
+  });
+});
 
 
 app.get('/', (req, res) => {
