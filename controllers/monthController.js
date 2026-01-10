@@ -1,6 +1,7 @@
 // controllers/month.controller.js
 
 const Month = require("../models/Month");
+const cache = require("../lib/cache/cache");
 
 const {
   ok,
@@ -24,6 +25,12 @@ const {
 const { populateGraphRelations } = require("../utils/relationHelper");
 const { getRelationFields, RELATION_MAP } = require("../utils/relationMapper");
 const { addRelation, removeRelation } = require("../utils/relation");
+const LIST_TTL = 300; // lists: 2–5 minutes
+const DETAIL_TTL = 900; // detail: 10–30 minutes
+const invalidateMonthCaches = (slug) => {
+  cache.del("months:list:all");
+  if (slug) cache.del(`months:slug:${slug}`);
+};
 
 // ---------------- Filters ----------------
 const buildFilters = (req) => {
@@ -109,31 +116,38 @@ function updateSubSchemaFields(updateData, subSchemaKey, schemaFields) {
 
 // ---------------- Public ----------------
 exports.listPublished = asyncHandler(async (req, res) => {
-  const { page, limit, skip } = parsePagination(req);
+  const qs = new URLSearchParams(req.query || {}).toString() || "all";
+  const cacheKey = `months:list:${qs}`;
 
-  const sort = latestSort(req.query.sort);
-  const where = { status: "published", ...buildFilters(req) };
+  const payload = await cache.getOrSet(cacheKey, LIST_TTL, async () => {
+    const { page, limit, skip } = parsePagination(req);
 
-  const search = buildSearch(req.query.q, ["month", "monthTag"]);
-  if (search) Object.assign(where, search);
+    const sort = latestSort(req.query.sort);
+    const where = { status: "published", ...buildFilters(req) };
 
-  const [items, total] = await Promise.all([
-    Month.find(where).sort(sort).skip(skip).limit(limit).lean(),
-    Month.countDocuments(where),
-  ]);
+    const search = buildSearch(req.query.q, ["month", "monthTag"]);
+    if (search) Object.assign(where, search);
 
-  // ⭐ Add universal relation graph to each month
-  for (const item of items) {
-    item.relations = await populateGraphRelations(item._id);
-  }
+    const [items, total] = await Promise.all([
+      Month.find(where).sort(sort).skip(skip).limit(limit).lean(),
+      Month.countDocuments(where),
+    ]);
 
-  return ok(res, {
-    items,
-    page,
-    limit,
-    total,
-    totalPages: Math.ceil(total / limit),
+    for (const item of items) {
+      item.relations = await populateGraphRelations(item._id);
+    }
+
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
   });
+
+  cache.setCacheHeaders(res, LIST_TTL);
+  return ok(res, payload);
 });
 
 // ---------------- Public: Get by Slug or ID ----------------
@@ -141,23 +155,31 @@ exports.getBySlugOrId = asyncHandler(async (req, res) => {
   const p = String(req.params.idOrSlug || "");
   const where = isObjectId(p) ? { _id: p } : { month: p.toLowerCase() };
 
-  const doc = await Month.findOne({ ...where, status: "published" })
-    .populate("tagBlogs")
-    .populate("tagDestinations")
-    .populate("tagTours")
-    .lean();
+  const cacheKey = `months:slug:${where._id || where.month}`;
+
+  const doc = await cache.getOrSet(cacheKey, DETAIL_TTL, async () => {
+    const result = await Month.findOne({ ...where, status: "published" })
+      .populate("tagBlogs")
+      .populate("tagDestinations")
+      .populate("tagTours")
+      .lean();
+
+    if (!result) return null;
+
+    const rawRelations = await populateGraphRelations(result._id);
+
+    const fields = RELATION_MAP.Month.relations;
+
+    for (const [field, cfg] of Object.entries(fields)) {
+      const type = cfg.type; // "Blog", "Destination",  etc.
+      result[field] = rawRelations[type] || [];
+    }
+    return result;
+  });
 
   if (!doc) return notFound(res, "Month not found");
 
-  const rawRelations = await populateGraphRelations(doc._id);
-
-  const fields = RELATION_MAP.Month.relations;
-
-  // Apply relations
-  for (const [field, cfg] of Object.entries(fields)) {
-    const type = cfg.type; // "Blog", "Destination",  etc.
-    doc[field] = rawRelations[type] || [];
-  }
+  cache.setCacheHeaders(res, DETAIL_TTL);
   return ok(res, doc);
 });
 
@@ -230,6 +252,7 @@ exports.create = asyncHandler(async (req, res) => {
 
   doc.relations = await populateGraphRelations(doc._id);
 
+  invalidateMonthCaches(doc.month || doc._id);
   return created(res, doc.toObject());
 });
 
@@ -264,6 +287,7 @@ exports.update = asyncHandler(async (req, res) => {
     Object.assign(doc, relationValues);
   }
 
+  invalidateMonthCaches(doc.month || doc._id);
   return ok(res, doc);
 });
 
@@ -288,6 +312,7 @@ exports.updateStatus = asyncHandler(async (req, res) => {
 
   doc.relations = await populateGraphRelations(doc._id);
 
+  invalidateMonthCaches(doc.month || doc._id);
   return ok(res, doc);
 });
 
@@ -300,6 +325,7 @@ exports.remove = asyncHandler(async (req, res) => {
   const doc = await Month.findByIdAndDelete(id).lean();
   if (!doc) return notFound(res, "Month not found");
 
+  invalidateMonthCaches(doc.month || doc._id);
   return ok(res, { id });
 });
 
@@ -326,6 +352,7 @@ exports.duplicate = asyncHandler(async (req, res) => {
 
   duplicate.relations = await populateGraphRelations(duplicate._id);
 
+  invalidateMonthCaches(duplicate.month || duplicate._id);
   return created(res, {
     message: "Month duplicated successfully",
     duplicate,

@@ -5,6 +5,8 @@ const cors = require('cors');
 const app = express();
 const mongoose = require('mongoose');
 const sanitizeRequest = require('./middleware/sanitize');
+const rateLimitPublic = require('./middleware/rateLimitPublic');
+const rateLimitAuth = require('./middleware/rateLimitAuth');
 
 const EmailMessage = require('./models/EmailMessage');
 const { DEFAULT_MESSAGES } = require('./utils/mailer');
@@ -91,56 +93,69 @@ mongoose.connection.once('open', async () => {
   setInterval(cleanupPendingBookings, 24 * 60 * 60 * 1000);
 });
 
+/*
+Cached endpoints (public read-heavy):
+- GET /api/blog, /api/categories, /api/destinations, /api/months, /api/tour (list/detail/search) to shield Mongo on catalog reads.
+- GET /api/home and site chrome: /api/site_global, /api/site_features, /api/site_destinationsList, /api/site_heroslides, /api/review.
+- GET /api/policy, /api/settings, /api/payment-gateways as global settings/policy documents.
+- GET /api/flyers for marketing assets.
+*/
 // Content Management
-app.use('/api/blog', require('./routes/blogRoutes'));
-app.use('/api/categories', require('./routes/categoryRoutes'));
-app.use('/api/destinations', require('./routes/destinationRoutes'));
+app.use('/api/blog', rateLimitPublic, require('./routes/blogRoutes'));
+app.use('/api/categories', rateLimitPublic, require('./routes/categoryRoutes'));
+app.use('/api/destinations', rateLimitPublic, require('./routes/destinationRoutes'));
 app.use('/api/enquiries', require('./routes/enquiryRoutes'));
 app.use('/api/lead', require('./routes/leadRoutes'));
-app.use('/api/months', require('./routes/monthRoutes'));
+app.use('/api/months', rateLimitPublic, require('./routes/monthRoutes'));
 app.use('/api/testimonial', require('./routes/testimonialRoutes'));
-app.use('/api/tour', require('./routes/tourRoutes')); // fixed typo here
-app.use('/api/relations', require('./routes/relationRoutes'));
+app.use('/api/tour', rateLimitPublic, require('./routes/tourRoutes')); // fixed typo here
+app.use('/api/relations', rateLimitPublic, require('./routes/relationRoutes'));
 app.use('/api/otp', require('./routes/otpRoutes'));
 
 // Site Management (Admin only — dashboard)
 app.use(
   '/api/site_destinationsList',
+  rateLimitPublic,
   require('./routes/destinationListRoutes'),
 );
-app.use('/api/site_features', require('./routes/featuresRoutes'));
-app.use('/api/site_global', require('./routes/globalRoutes'));
-app.use('/api/review', require('./routes/reviewRoutes'));
-app.use('/api/site_heroslides', require('./routes/heroSlideRoutes'));
+app.use('/api/site_features', rateLimitPublic, require('./routes/featuresRoutes'));
+app.use('/api/site_global', rateLimitPublic, require('./routes/globalRoutes'));
+app.use('/api/review', rateLimitPublic, require('./routes/reviewRoutes'));
+app.use('/api/site_heroslides', rateLimitPublic, require('./routes/heroSlideRoutes'));
 
 // Main
+app.use(['/api/home', '/api/search'], rateLimitPublic);
 app.use('/api', require('./routes/homeRoutes')); // <- name matches the file exactly
 
-app.use('/api/settings', require('./routes/settings'));
+app.use('/api/settings', rateLimitPublic, require('./routes/settings'));
 app.use('/api/smtp-settings', require('./routes/smtpSettings'));
 app.use('/api/roles', require('./routes/roleRoutes'));
 app.use('/api/users', require('./routes/userRoutes'));
 
 // // ROUTES
-app.use('/api/auth', require('./routes/authRoute'));
+app.use('/api/auth', rateLimitAuth, require('./routes/authRoute'));
 app.use('/api/models', require('./routes/model'));
 app.use('/api/schema', require('./routes/schema'));
 // index.js
 app.use('/api/export', require('./routes/exportRoutes'));
 // Register the image routes
 app.use('/api/images', require('./routes/imageUploadRoutes'));
-app.use('/api/count', require('./routes/count'));
+app.use('/api/count', rateLimitPublic, require('./routes/count'));
 app.use('/api/docs', require('./routes/documentRoutes'));
 
 app.use('/apihome', require('./routes/slugsRoutes'));
 app.use('/api/files', require('./routes/fileRoutes'));
 app.use('/api/emailMessages', require('./routes/emailMessageRoutes'));
-app.use('/api/flyers', require('./routes/flyerRoutes'));
-app.use('/api/policy', require('./routes/policyRoutes'));
+app.use('/api/flyers', rateLimitPublic, require('./routes/flyerRoutes'));
+app.use('/api/policy', rateLimitPublic, require('./routes/policyRoutes'));
 app.use('/api/booking', require('./routes/bookingRoutes'));
 // routes
 app.use('/api/payment', require('./routes/paymentRoutes'));
-app.use('/api/payment-gateways', require('./routes/paymentGatewayRoutes'));
+app.use(
+  '/api/payment-gateways',
+  rateLimitPublic,
+  require('./routes/paymentGatewayRoutes'),
+);
 
 app.use((err, req, res, next) => {
   console.error(err);

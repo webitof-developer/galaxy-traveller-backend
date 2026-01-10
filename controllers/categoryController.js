@@ -1,6 +1,7 @@
 // controllers/category.controller.js
 const mongoose = require("mongoose");
 const Category = require("../models/Category");
+const cache = require("../lib/cache/cache");
 
 const {
   ok,
@@ -24,6 +25,12 @@ const {
 const { populateGraphRelations } = require("../utils/relationHelper");
 const { getRelationFields, RELATION_MAP } = require("../utils/relationMapper");
 const { addRelation, removeRelation } = require("../utils/relation");
+const LIST_TTL = 300; // lists: 2–5 minutes
+const DETAIL_TTL = 900; // detail: 10–30 minutes
+const invalidateCategoryCaches = (slug) => {
+  cache.del("categories:list:all");
+  if (slug) cache.del(`categories:slug:${slug}`);
+};
 
 // ---------------- Filters ----------------
 const buildFilters = (req) => {
@@ -107,18 +114,25 @@ const syncRelations = async (id, incoming, defs, fromType) => {
 
 // ---------------- Public ----------------
 exports.listPublished = asyncHandler(async (req, res) => {
-  const where = { status: "published", ...buildFilters(req) };
-  const search = buildSearch(req.query.q);
+  const qs = new URLSearchParams(req.query || {}).toString() || "all";
+  const cacheKey = `categories:list:${qs}`;
 
-  if (search) Object.assign(where, search);
+  const categories = await cache.getOrSet(cacheKey, LIST_TTL, async () => {
+    const where = { status: "published", ...buildFilters(req) };
+    const search = buildSearch(req.query.q);
 
-  const categories = await Category.find(where).populate("blogs").lean();
+    if (search) Object.assign(where, search);
 
-  // ⭐ Universal relations
-  for (const item of categories) {
-    item.relations = await populateGraphRelations(item._id);
-  }
+    const items = await Category.find(where).populate("blogs").lean();
 
+    for (const item of items) {
+      item.relations = await populateGraphRelations(item._id);
+    }
+
+    return items;
+  });
+
+  cache.setCacheHeaders(res, LIST_TTL);
   return ok(res, { items: categories });
 });
 
@@ -127,20 +141,27 @@ exports.getBySlugOrId = asyncHandler(async (req, res) => {
   const p = String(req.params.idOrSlug || "");
   const where = isObjectId(p) ? { _id: p } : { tag: p.toLowerCase() };
 
-  const doc = await Category.findOne({ ...where, status: "published" }).lean();
+  const cacheKey = `categories:slug:${where._id || where.tag}`;
+
+  const doc = await cache.getOrSet(cacheKey, DETAIL_TTL, async () => {
+    const result = await Category.findOne({ ...where, status: "published" }).lean();
+    if (!result) return null;
+
+    const rawRelations = await populateGraphRelations(result._id);
+
+    const fields = RELATION_MAP.Category.relations;
+
+    for (const [field, cfg] of Object.entries(fields)) {
+      const type = cfg.type; // "Blog", "Destination",   etc.
+      result[field] = rawRelations[type] || [];
+    }
+
+    return result;
+  });
+
   if (!doc) return notFound(res, "Category not found");
 
-  // ⭐ Graph relations
-  const rawRelations = await populateGraphRelations(doc._id);
-
-  const fields = RELATION_MAP.Category.relations;
-
-  // Apply relations
-  for (const [field, cfg] of Object.entries(fields)) {
-    const type = cfg.type; // "Blog", "Destination",   etc.
-    doc[field] = rawRelations[type] || [];
-  }
-
+  cache.setCacheHeaders(res, DETAIL_TTL);
   return ok(res, doc);
 });
 
@@ -216,6 +237,7 @@ exports.create = asyncHandler(async (req, res) => {
 
   doc.relations = await populateGraphRelations(doc._id);
 
+  invalidateCategoryCaches(doc.tag || doc._id);
   return created(res, doc.toObject());
 });
 
@@ -248,6 +270,7 @@ exports.update = asyncHandler(async (req, res) => {
     Object.assign(doc, relationValues);
   }
 
+  invalidateCategoryCaches(doc.tag || doc._id);
   return ok(res, doc);
 });
 
@@ -271,6 +294,7 @@ exports.updateStatus = asyncHandler(async (req, res) => {
 
   doc.relations = await populateGraphRelations(doc._id);
 
+  invalidateCategoryCaches(doc.tag || doc._id);
   return ok(res, doc);
 });
 
@@ -283,6 +307,7 @@ exports.remove = asyncHandler(async (req, res) => {
   const doc = await Category.findByIdAndDelete(id).lean();
   if (!doc) return notFound(res, "Category not found");
 
+  invalidateCategoryCaches(doc.tag || doc._id);
   return ok(res, { id });
 });
 
@@ -309,6 +334,7 @@ exports.duplicate = asyncHandler(async (req, res) => {
 
   duplicate.relations = await populateGraphRelations(duplicate._id);
 
+  invalidateCategoryCaches(duplicate.tag || duplicate._id);
   return created(res, {
     message: "Category duplicated successfully",
     duplicate,

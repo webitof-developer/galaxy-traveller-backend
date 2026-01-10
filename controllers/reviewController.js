@@ -2,6 +2,9 @@
 const ListReview = require('../models/Review');
 const { ok, fail, notFound, asyncHandler } = require('../utils/respond');
 const { isObjectId } = require('../utils/query');
+const cache = require('../lib/cache/cache');
+const TTL_SECONDS = 600; // globals/settings: 5–15 minutes
+const CACHE_KEY = 'site:reviews';
 
 async function getOrCreateSingleton() {
   let doc = await ListReview.findOne();
@@ -10,8 +13,11 @@ async function getOrCreateSingleton() {
 }
 
 exports.getPublished = asyncHandler(async (_req, res) => {
-  const doc = await ListReview.findOne({ status: 'published' }).lean();
+  const doc = await cache.getOrSet(CACHE_KEY, TTL_SECONDS, async () =>
+    ListReview.findOne({ status: 'published' }).lean(),
+  );
   if (!doc) return notFound(res, 'ListReview not found');
+  cache.setCacheHeaders(res, TTL_SECONDS);
   return ok(res, doc);
 });
 
@@ -86,5 +92,6 @@ exports.updateSingleton = asyncHandler(async (req, res) => {
 
   if (!mutated) return fail(res, 'No valid changes provided', 400);
   await doc.save();
+  cache.del(CACHE_KEY);
   return ok(res, doc.toObject());
 });

@@ -1,6 +1,9 @@
 // controllers/hero.controller.js
 const Hero = require("../models/HeroSlide");
 const { ok, fail, notFound, asyncHandler } = require("../utils/respond");
+const cache = require("../lib/cache/cache");
+const TTL_SECONDS = 600; // globals/settings: 5–15 minutes
+const CACHE_KEY = "site:heroslides";
 
 // helper: ensure singleton exists
 async function getOrCreate() {
@@ -16,8 +19,11 @@ async function getOrCreate() {
 
 // ---------- Public ----------
 exports.getPublished = asyncHandler(async (_req, res) => {
-  const doc = await Hero.findOne({ status: "published" }).lean();
+  const doc = await cache.getOrSet(CACHE_KEY, TTL_SECONDS, async () =>
+    Hero.findOne({ status: "published" }).lean()
+  );
   if (!doc) return notFound(res, "Hero not found");
+  cache.setCacheHeaders(res, TTL_SECONDS);
   return ok(res, doc);
 });
 
@@ -72,5 +78,6 @@ exports.updateSingleton = asyncHandler(async (req, res) => {
   });
 
   // ---------- RESPONSE ----------
+  cache.del(CACHE_KEY);
   return ok(res, doc.toObject ? doc.toObject() : doc);
 });

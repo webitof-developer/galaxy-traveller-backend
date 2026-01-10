@@ -8,36 +8,48 @@ const User = require("../models/User");
 const Tour = require("../models/Tour");
 const Feature = require("../models/Features");
 const { ok, notFound, fail, asyncHandler } = require("../utils/respond");
+const cache = require("../lib/cache/cache");
 
 dotenv = require("dotenv");
 dotenv.config();
+const HOME_TTL = 300; // homepage aggregates: short list cache
+const SEARCH_TTL = 180; // search responses: light caching
 
 exports.getHomeData = async (req, res) => {
   try {
-    // Fetch data in parallel
-    const [heroSlides, features, reviews] = await Promise.all([
-      HeroSlide.find({ status: "published" }).sort({ createdAt: -1 }).lean(),
+    const cacheKey = "home";
 
-      Feature.find({ status: "published" })
-        .sort({ createdAt: -1 })
-        .populate("blogs destinations tours")
-        .lean(),
-      Review.find({ status: "published" }).sort({ createdAt: -1 }).lean(),
-    ]);
+    const payload = await cache.getOrSet(cacheKey, HOME_TTL, async () => {
+      // Fetch data in parallel
+      const [heroSlides, features, reviews] = await Promise.all([
+        HeroSlide.find({ status: "published" }).sort({ createdAt: -1 }).lean(),
 
-    // Flatten the data
-    const heroSlidesData = heroSlides[0]?.heroSlide || [];
-    const reviewData = reviews[0]?.group || [];
+        Feature.find({ status: "published" })
+          .sort({ createdAt: -1 })
+          .populate("blogs destinations tours")
+          .lean(),
+        Review.find({ status: "published" }).sort({ createdAt: -1 }).lean(),
+      ]);
 
-    return ok(res, {
-      hero: heroSlidesData,
+      // Flatten the data
+      const heroSlidesData = heroSlides[0]?.heroSlide || [];
+      const reviewData = reviews[0]?.group || [];
 
-      destinations: features[0]?.destinations || [],
-      tours: features[0]?.tours || [],
-      blogs: features[0]?.blogs || [],
-      features,
-      reviews: reviewData,
+      return {
+        hero: heroSlidesData,
+
+        destinations: features[0]?.destinations || [],
+        tours: features[0]?.tours || [],
+        blogs: features[0]?.blogs || [],
+        features,
+        reviews: reviewData,
+      };
     });
+
+    // allow edge/CDN caching for the public home payload
+    cache.setCacheHeaders(res, HOME_TTL);
+
+    return ok(res, payload);
   } catch (err) {
     console.error("Error fetching home data:", err);
     return res.status(500).json({
@@ -53,76 +65,82 @@ exports.searchHomeData = async (req, res) => {
     const query = req.params.query.trim().toLowerCase();
     const filter = (req.query.filter || "all").toLowerCase();
 
-    let destinations = [],
-      tours = [],
-      blogs = [],
-      creators = [],
-      creatorBlogs = [],
-      creatorTours = [];
+    const cacheKey = `home:search:${filter}:${query}`;
+    const payload = await cache.getOrSet(cacheKey, SEARCH_TTL, async () => {
+      let destinations = [],
+        tours = [],
+        blogs = [],
+        creators = [],
+        creatorBlogs = [],
+        creatorTours = [];
 
-    if (filter === "all" || filter === "destinations") {
-      destinations = await Destination.find({
-        title: { $regex: query, $options: "i" },
-        status: "published",
-      }).lean();
-    }
+      if (filter === "all" || filter === "destinations") {
+        destinations = await Destination.find({
+          title: { $regex: query, $options: "i" },
+          status: "published",
+        }).lean();
+      }
 
-    if (filter === "all" || filter === "tours") {
-      tours = await Tour.find({
-        title: { $regex: query, $options: "i" },
-        status: "published",
-      }).lean();
-    }
+      if (filter === "all" || filter === "tours") {
+        tours = await Tour.find({
+          title: { $regex: query, $options: "i" },
+          status: "published",
+        }).lean();
+      }
 
-    if (filter === "all" || filter === "blogs") {
-      blogs = await Blog.find({
-        title: { $regex: query, $options: "i" },
-        status: "published",
-      }).lean();
-    }
+      if (filter === "all" || filter === "blogs") {
+        blogs = await Blog.find({
+          title: { $regex: query, $options: "i" },
+          status: "published",
+        }).lean();
+      }
 
-    if (filter === "all" || filter === "creator") {
-      creators = await User.find({
-        name: { $regex: query, $options: "i" },
-        status: "active",
-        roleName: "creator",
-      }).lean();
-    }
+      if (filter === "all" || filter === "creator") {
+        creators = await User.find({
+          name: { $regex: query, $options: "i" },
+          status: "active",
+          roleName: "creator",
+        }).lean();
+      }
 
-    if (filter === "all" || filter === "creatorBlogs") {
-      creatorBlogs = await Blog.find({
-        title: { $regex: query, $options: "i" },
-        status: "published",
-      })
-        .populate("createdBy", "roleName")
-        .lean();
+      if (filter === "all" || filter === "creatorBlogs") {
+        creatorBlogs = await Blog.find({
+          title: { $regex: query, $options: "i" },
+          status: "published",
+        })
+          .populate("createdBy", "roleName")
+          .lean();
 
-      creatorBlogs = creatorBlogs.filter(
-        (b) => b.createdBy?.roleName === "creator"
-      );
-    }
+        creatorBlogs = creatorBlogs.filter(
+          (b) => b.createdBy?.roleName === "creator"
+        );
+      }
 
-    if (filter === "all" || filter === "creatorTours") {
-      creatorTours = await Tour.find({
-        title: { $regex: query, $options: "i" },
-        status: "published",
-      })
-        .populate("createdBy", "roleName")
-        .lean();
+      if (filter === "all" || filter === "creatorTours") {
+        creatorTours = await Tour.find({
+          title: { $regex: query, $options: "i" },
+          status: "published",
+        })
+          .populate("createdBy", "roleName")
+          .lean();
 
-      creatorTours = creatorTours.filter(
-        (t) => t.createdBy?.roleName === "creator"
-      );
-    }
+        creatorTours = creatorTours.filter(
+          (t) => t.createdBy?.roleName === "creator"
+        );
+      }
 
-    return ok(res, {
-      destinations,
-      tours,
-      blogs,
-      creators,
-      creatorBlogs,
-      creatorTours,
+      return {
+        destinations,
+        tours,
+        blogs,
+        creators,
+        creatorBlogs,
+        creatorTours,
+      };
     });
+
+    cache.setCacheHeaders(res, SEARCH_TTL);
+    return ok(res, payload);
   } catch (err) {
     console.error("Error searching home data:", err);
     return res.status(500).json({

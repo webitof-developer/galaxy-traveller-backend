@@ -1,6 +1,9 @@
 // controllers/featured.controller.js (singleton)
 const Featured = require("../models/Features");
 const { ok, notFound, fail, asyncHandler } = require("../utils/respond");
+const cache = require("../lib/cache/cache");
+const TTL_SECONDS = 600; // globals/settings: 5–15 minutes
+const CACHE_KEY = "site:features";
 async function getOrCreateSingleton() {
   let doc = await Featured.findOne();
   if (!doc) doc = await Featured.create({ group: [], status: "draft" });
@@ -8,8 +11,11 @@ async function getOrCreateSingleton() {
 }
 // Public: return the single published Featured doc
 exports.getPublished = asyncHandler(async (_req, res) => {
-  const doc = await Featured.findOne({ status: "published" }).lean();
+  const doc = await cache.getOrSet(CACHE_KEY, TTL_SECONDS, async () =>
+    Featured.findOne({ status: "published" }).lean()
+  );
   if (!doc) return notFound(res, "Featured not found");
+  cache.setCacheHeaders(res, TTL_SECONDS);
   return ok(res, doc);
 });
 
@@ -56,5 +62,6 @@ exports.updateSingleton = asyncHandler(async (req, res) => {
     runValidators: true,
   }).lean();
 
+  cache.del(CACHE_KEY);
   return ok(res, doc);
 });

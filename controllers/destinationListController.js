@@ -3,6 +3,9 @@ const ListDestination = require('../models/DestinationList');
 const { ok, fail, notFound, asyncHandler } = require('../utils/respond');
 const { isObjectId } = require('../utils/query');
 const Relation = require('../models/Relation');
+const cache = require('../lib/cache/cache');
+const TTL_SECONDS = 600; // globals/settings: 5–15 minutes
+const CACHE_KEY = 'site:destinations:list';
 
 async function getOrCreateSingleton() {
   let doc = await ListDestination.findOne();
@@ -16,93 +19,100 @@ exports.getSingletonModeration = asyncHandler(async (_req, res) => {
 });
 
 exports.getPublished = asyncHandler(async (_req, res) => {
-  const doc = await ListDestination.findOne({ status: 'published' })
-    .populate({
-      path: 'group.destinations',
-      model: 'Destination',
-      select: 'title heroImg slug status startingPrice description tagMonths',
-      populate: {
-        path: 'tagMonths',
-        model: 'Month',
-        select: 'month',
-      },
-    })
-    .lean();
-  if (!doc) return notFound(res, 'ListDestination not found');
+  const doc = await cache.getOrSet(CACHE_KEY, TTL_SECONDS, async () => {
+    const result = await ListDestination.findOne({ status: 'published' })
+      .populate({
+        path: 'group.destinations',
+        model: 'Destination',
+        select: 'title heroImg slug status startingPrice description tagMonths',
+        populate: {
+          path: 'tagMonths',
+          model: 'Month',
+          select: 'month',
+        },
+      })
+      .lean();
+    if (!result) return null;
 
-  // Compute tour counts per destination using relation edges (destination_tour)
-  const allDestinations =
-    doc?.group?.flatMap((g) => g?.destinations || []) || [];
-  const destIds = [
-    ...new Set(
-      allDestinations
-        .map((d) => String(d?._id || d?.id || d || ''))
-        .filter(Boolean),
-    ),
-  ];
+    // Compute tour counts per destination using relation edges (destination_tour)
+    const allDestinations =
+      result?.group?.flatMap((g) => g?.destinations || []) || [];
+    const destIds = [
+      ...new Set(
+        allDestinations
+          .map((d) => String(d?._id || d?.id || d || ''))
+          .filter(Boolean),
+      ),
+    ];
 
-  if (destIds.length) {
-    const mongoose = require('mongoose');
-    const destObjIds = destIds
-      .filter((id) => mongoose.Types.ObjectId.isValid(id))
-      .map((id) => new mongoose.Types.ObjectId(id));
+    if (destIds.length) {
+      const mongoose = require('mongoose');
+      const destObjIds = destIds
+        .filter((id) => mongoose.Types.ObjectId.isValid(id))
+        .map((id) => new mongoose.Types.ObjectId(id));
 
-    const rels = await Relation.find({
-      kind: 'destination_tour',
-      $or: [
-        { 'from.id': { $in: destObjIds } },
-        { 'to.id': { $in: destObjIds } },
-      ],
-    }).lean();
+      const rels = await Relation.find({
+        kind: 'destination_tour',
+        $or: [
+          { 'from.id': { $in: destObjIds } },
+          { 'to.id': { $in: destObjIds } },
+        ],
+      }).lean();
 
-    const countMap = {};
-    const idSet = new Set(destIds);
+      const countMap = {};
+      const idSet = new Set(destIds);
 
-    for (const r of rels) {
-      const fromId = String(r.from.id);
-      const toId = String(r.to.id);
+      for (const r of rels) {
+        const fromId = String(r.from.id);
+        const toId = String(r.to.id);
 
-      // Count only edges where one side is destination and the other is tour
-      if (
-        r.from.type === 'Destination' &&
-        r.to.type === 'Tour' &&
-        idSet.has(fromId)
-      ) {
-        countMap[fromId] = (countMap[fromId] || 0) + 1;
-      } else if (
-        r.to.type === 'Destination' &&
-        r.from.type === 'Tour' &&
-        idSet.has(toId)
-      ) {
-        countMap[toId] = (countMap[toId] || 0) + 1;
+        // Count only edges where one side is destination and the other is tour
+        if (
+          r.from.type === 'Destination' &&
+          r.to.type === 'Tour' &&
+          idSet.has(fromId)
+        ) {
+          countMap[fromId] = (countMap[fromId] || 0) + 1;
+        } else if (
+          r.to.type === 'Destination' &&
+          r.from.type === 'Tour' &&
+          idSet.has(toId)
+        ) {
+          countMap[toId] = (countMap[toId] || 0) + 1;
+        }
+      }
+
+      if (Array.isArray(result.group)) {
+        result.group = result.group.map((group) => ({
+          ...group,
+          destinations: (group?.destinations || []).map((d) => {
+            const id = String(d?._id || d?.id || d || '');
+            if (!id) return d;
+            const simplifiedMonths = Array.isArray(d?.tagMonths)
+              ? d.tagMonths.map((m) =>
+                  m?.month
+                    ? { month: m.month, monthTag: m.monthTag || m.month }
+                    : m?.monthTag
+                    ? { month: m.monthTag, monthTag: m.monthTag }
+                    : m,
+                )
+              : [];
+            return {
+              ...d,
+              tourCount: countMap[id] || 0,
+              tagMonths: simplifiedMonths,
+            };
+          }),
+        }));
       }
     }
 
-    if (Array.isArray(doc.group)) {
-      doc.group = doc.group.map((group) => ({
-        ...group,
-        destinations: (group?.destinations || []).map((d) => {
-          const id = String(d?._id || d?.id || d || '');
-          if (!id) return d;
-          const simplifiedMonths = Array.isArray(d?.tagMonths)
-            ? d.tagMonths.map((m) =>
-                m?.month
-                  ? { month: m.month, monthTag: m.monthTag || m.month }
-                  : m?.monthTag
-                  ? { month: m.monthTag, monthTag: m.monthTag }
-                  : m,
-              )
-            : [];
-          return {
-            ...d,
-            tourCount: countMap[id] || 0,
-            tagMonths: simplifiedMonths,
-          };
-        }),
-      }));
-    }
-  }
+    return result;
+  });
 
+  if (!doc) return notFound(res, 'ListDestination not found');
+
+  cache.setCacheHeaders(res, TTL_SECONDS);
   return ok(res, doc);
 });
 
@@ -168,5 +178,6 @@ exports.updateSingleton = asyncHandler(async (req, res) => {
 
   if (!mutated) return fail(res, 'No valid changes provided', 400);
   await doc.save();
+  cache.del(CACHE_KEY);
   return ok(res, doc.toObject());
 });

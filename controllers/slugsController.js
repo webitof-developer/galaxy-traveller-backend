@@ -2,6 +2,7 @@
 const Blog = require("../models/Blog");
 const Tour = require("../models/Tour");
 const Destination = require("../models/Destination");
+const cache = require("../utils/cache");
 
 const MODEL_BY_TYPE = {
   blog: Blog,
@@ -47,11 +48,11 @@ exports.getSlugs = async (req, res) => {
     // Projection is minimal for sitemap
     const projection = { slug: 1, updatedAt: 1, _id: 0 };
 
-    // Fetch all slugs
-    const items = await Model.find(query, projection)
-      .sort({ updatedAt: -1 }) // Sort by most recent
-      .lean()
-      .exec();
+    const key = `slugs:${type}:${status || "all"}:${since ? since.toISOString() : "all"}`;
+
+    const items = await cache.getOrSet(key, 600, async () =>
+      Model.find(query, projection).sort({ updatedAt: -1 }).lean().exec()
+    );
 
     // Cache headers (tune as you like)
     res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=600");

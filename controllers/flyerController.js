@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Flyer = require("../models/Flyer");
 const User = require("../models/User");
+const cache = require("../lib/cache/cache");
 
 const {
   ok,
@@ -20,6 +21,12 @@ const {
 const { populateGraphRelations } = require("../utils/relationHelper");
 const { buildFolderPath } = require("../utils/pathbuilderandpublicurl");
 const { uploadImage } = require("../utils/uploadHelper");
+const LIST_TTL = 300; // lists: 2–5 minutes
+const DETAIL_TTL = 900; // detail: 10–30 minutes
+const invalidateFlyerCaches = (id) => {
+  cache.del("flyers:list:all");
+  if (id) cache.del(`flyers:${id}`);
+};
 
 // ---------------- HELPERS ----------------
 
@@ -45,37 +52,42 @@ function clean(obj) {
 
 // ---------------- PUBLIC LISTING ----------------
 exports.listPublished = asyncHandler(async (req, res) => {
-  console.log("Published Flyers");
-  const { page, limit, skip } = parsePagination(req);
-  const filters = buildFilters(req);
-  const search = buildSearch(req.query.q, ["title", "description"]);
+  const qs = new URLSearchParams(req.query || {}).toString() || "all";
+  const cacheKey = `flyers:list:${qs}`;
 
-  const where = { status: "published", ...(filters || {}) };
-  if (search) Object.assign(where, search);
+  const payload = await cache.getOrSet(cacheKey, LIST_TTL, async () => {
+    const { page, limit, skip } = parsePagination(req);
+    const filters = buildFilters(req);
+    const search = buildSearch(req.query.q, ["title", "description"]);
 
-  const sort = { updatedAt: -1 };
+    const where = { status: "published", ...(filters || {}) };
+    if (search) Object.assign(where, search);
 
-  const [items, total] = await Promise.all([
-    Flyer.find(where)
-      .sort(sort)
-      .skip(skip)
-      .limit(limit)
-      .populate({ path: "tour", select: "title slug" })
-      .populate({ path: "destination", select: "title slug" })
-      .lean(),
+    const sort = { updatedAt: -1 };
 
-    Flyer.countDocuments(where),
-  ]);
+    const [items, total] = await Promise.all([
+      Flyer.find(where)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .populate({ path: "tour", select: "title slug" })
+        .populate({ path: "destination", select: "title slug" })
+        .lean(),
 
-  console.log(items);
+      Flyer.countDocuments(where),
+    ]);
 
-  return ok(res, {
-    items,
-    page,
-    limit,
-    total,
-    totalPages: Math.ceil(total / limit),
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
   });
+
+  cache.setCacheHeaders(res, LIST_TTL);
+  return ok(res, payload);
 });
 
 // ---------------- MODERATION ----------------
@@ -115,15 +127,16 @@ exports.getOne = asyncHandler(async (req, res) => {
   const id = req.params.id;
   if (!isObjectId(id)) return notFound(res, "Invalid flyer id");
 
-  const flyer = await Flyer.findById(id)
-    .populate("destination")
-    .populate("tour")
-    .lean();
+  const cacheKey = `flyers:${id}`;
+  const flyer = await cache.getOrSet(cacheKey, DETAIL_TTL, async () =>
+    Flyer.findById(id).populate("destination").populate("tour").lean()
+  );
 
   if (!flyer) return notFound(res, "Flyer not found");
 
   flyer.relations = await populateGraphRelations(flyer._id);
 
+  cache.setCacheHeaders(res, DETAIL_TTL);
   return ok(res, flyer);
 });
 
@@ -156,6 +169,7 @@ exports.create = asyncHandler(async (req, res) => {
   }
 
   flyer.relations = await populateGraphRelations(flyer._id);
+  invalidateFlyerCaches(flyer._id);
   return created(res, flyer);
 });
 
@@ -175,6 +189,7 @@ exports.update = asyncHandler(async (req, res) => {
 
   updatedFlyer.relations = await populateGraphRelations(id);
 
+  invalidateFlyerCaches(id);
   return ok(res, updatedFlyer);
 });
 
@@ -186,6 +201,7 @@ exports.remove = asyncHandler(async (req, res) => {
   const flyer = await Flyer.findByIdAndDelete(id).lean();
   if (!flyer) return notFound(res, "Flyer not found");
 
+  invalidateFlyerCaches(id);
   return ok(res, { id });
 });
 
@@ -211,5 +227,6 @@ exports.duplicate = asyncHandler(async (req, res) => {
   const duplicate = await Flyer.create(duplicateData);
   duplicate.relations = await populateGraphRelations(duplicate._id);
 
+  invalidateFlyerCaches(duplicate._id);
   return created(res, { message: "Flyer duplicated successfully", duplicate });
 });

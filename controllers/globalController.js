@@ -1,6 +1,9 @@
 // controllers/global.controller.js (fixed conflicting update)
 const Global = require("../models/Global");
 const { ok, notFound, fail, asyncHandler } = require("../utils/respond");
+const cache = require("../lib/cache/cache");
+const TTL_SECONDS = 600; // globals/settings: 5–15 minutes
+const CACHE_KEY = "site_global";
 
 async function getOrCreateSingleton() {
   let doc = await Global.findOne();
@@ -15,8 +18,12 @@ async function getOrCreateSingleton() {
 }
 
 exports.getPublished = asyncHandler(async (_req, res) => {
-  const doc = await Global.findOne({ status: "published" }).lean();
+  const doc = await cache.getOrSet(CACHE_KEY, TTL_SECONDS, async () =>
+    Global.findOne({ status: "published" }).lean()
+  );
   if (!doc) return notFound(res, "Global not found");
+
+  cache.setCacheHeaders(res, TTL_SECONDS);
   return ok(res, doc);
 });
 
@@ -85,5 +92,6 @@ exports.updateSingleton = asyncHandler(async (req, res) => {
   });
 
   if (!doc) return fail(res, "Failed to update Global", 500);
+  cache.del(CACHE_KEY);
   return ok(res, doc.toObject());
 });

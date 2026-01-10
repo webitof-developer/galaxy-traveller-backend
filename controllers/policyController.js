@@ -1,9 +1,16 @@
 const PolicyPage = require("../models/PolicyPage");
+const cache = require("../lib/cache/cache");
+const POLICY_TTL = 3600; // policies/legal: 1–6 hours
 
 // PUBLIC GET (no auth)
 exports.getPublicPolicy = async (req, res) => {
-  const doc = await PolicyPage.findOne().lean();
-  return res.json(doc || { policies: "", terms: "" });
+  const cacheKey = "policy";
+  const doc = await cache.getOrSet(cacheKey, POLICY_TTL, async () =>
+    PolicyPage.findOne().lean()
+  );
+  cache.setCacheHeaders(res, POLICY_TTL);
+  const payload = doc || { policies: "", terms: "" };
+  return res.json(payload);
 };
 
 // ADMIN GET
@@ -24,5 +31,6 @@ exports.updateAdminPolicy = async (req, res) => {
 
   await doc.save();
 
+  cache.del("policy");
   return res.json({ success: true, doc });
 };

@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const Tour = require('../models/Tour');
 const User = require('../models/User');
 const Testimonial = require('../models/Testimonial');
+const cache = require('../lib/cache/cache');
 
 const {
   ok,
@@ -29,6 +30,15 @@ const { notifyUser } = require('../utils/notifyUser');
 const { populateGraphRelations } = require('../utils/relationHelper');
 const { getRelationFields, RELATION_MAP } = require('../utils/relationMapper');
 const { addRelation, removeRelation } = require('../utils/relation');
+
+const LIST_TTL = 300; // lists/search: 2–5 minutes
+const DETAIL_TTL = 900; // detail: 10–30 minutes
+const invalidateTourCaches = (slug) => {
+  cache.del('tours:list:all');
+  cache.del('tours:search-home:all');
+  cache.del('tours:search:all');
+  if (slug) cache.del(`tours:slug:${slug}`);
+};
 
 // Build filters from query
 const buildFilters = (req) => {
@@ -157,44 +167,46 @@ const applyTourTypeFilter = (where, tourType) => {
 // ---------- Public ----------
 
 exports.listPublished = asyncHandler(async (req, res) => {
-  const { page, limit, skip } = parsePagination(req);
-  const sort = latestSort(req.query.sort);
-  const where = { status: 'published', ...buildFilters(req) };
+  const qs = new URLSearchParams(req.query || {}).toString() || 'all';
+  const cacheKey = `tours:list:${qs}`;
+  const payload = await cache.getOrSet(cacheKey, LIST_TTL, async () => {
+    const { page, limit, skip } = parsePagination(req);
+    const sort = latestSort(req.query.sort);
+    const where = { status: 'published', ...buildFilters(req) };
 
-  if (req.query.tourType) {
-    where.tourType = req.query.tourType;
-  }
-
-  const search = buildSearch(req.query.q, searchFields);
-  if (search) Object.assign(where, search);
-
-  const [items, total] = await Promise.all([
-    Tour.find(where).sort(sort).skip(skip).limit(limit).lean(),
-    Tour.countDocuments(where),
-  ]);
-
-  console.log('items', items);
-
-  const fields = RELATION_MAP.Tour.relations; // { destinations: {...},  blogs: {...}, ... }
-
-  for (const item of items) {
-    const rawRelations = await populateGraphRelations(item._id);
-    // rawRelations = { Blog: [...], Destination: [...],  Tour: [...] }
-
-    // normalize into tour fields
-    for (const [field, cfg] of Object.entries(fields)) {
-      const type = cfg.type; // "Blog", "Destination", etc.
-      item[field] = rawRelations[type] || [];
+    if (req.query.tourType) {
+      where.tourType = req.query.tourType;
     }
-  }
 
-  return ok(res, {
-    items,
-    page,
-    limit,
-    total,
-    totalPages: Math.ceil(total / limit),
+    const search = buildSearch(req.query.q, searchFields);
+    if (search) Object.assign(where, search);
+
+    const [items, total] = await Promise.all([
+      Tour.find(where).sort(sort).skip(skip).limit(limit).lean(),
+      Tour.countDocuments(where),
+    ]);
+
+    const fields = RELATION_MAP.Tour.relations;
+
+    for (const item of items) {
+      const rawRelations = await populateGraphRelations(item._id);
+      for (const [field, cfg] of Object.entries(fields)) {
+        const type = cfg.type;
+        item[field] = rawRelations[type] || [];
+      }
+    }
+
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
   });
+
+  cache.setCacheHeaders(res, LIST_TTL);
+  return ok(res, payload);
 });
 
 // ---------- Public: getBySlugOrId ----------
@@ -206,42 +218,41 @@ exports.getBySlugOrId = asyncHandler(async (req, res) => {
   const testimonialSelect =
     'name heading review stars img profileImg date travelType createdAt';
 
-  const doc = await Tour.findOne({
-    ...where,
-    status: 'published',
-  })
-    // ⭐ Legacy relational arrays (kept intact)
-    .populate('tours')
-    .populate('blogs')
-    .populate('tagMonths')
-
-    // Creator info (untouched)
-    .populate({
-      path: 'createdBy',
-      select: 'name email profileImg bio slug',
+  const cacheKey = `tours:slug:${where._id || where.slug}`;
+  const doc = await cache.getOrSet(cacheKey, DETAIL_TTL, async () => {
+    const result = await Tour.findOne({
+      ...where,
+      status: 'published',
     })
+      .populate('tours')
+      .populate('blogs')
+      .populate('tagMonths')
+      .populate({
+        path: 'createdBy',
+        select: 'name email profileImg bio slug',
+      })
+      .populate({
+        path: 'testimonials',
+        match: { status: 'published' },
+        select: testimonialSelect,
+        options: { sort: { createdAt: -1 } },
+      })
+      .lean();
 
-    // Testimonials (untouched)
-    .populate({
-      path: 'testimonials',
-      match: { status: 'published' },
-      select: testimonialSelect,
-      options: { sort: { createdAt: -1 } },
-    })
-    .lean();
+    if (!result) return null;
+
+    const rawRelations = await populateGraphRelations(result._id);
+    const fields = RELATION_MAP.Tour.relations;
+    for (const [field, cfg] of Object.entries(fields)) {
+      const type = cfg.type;
+      result[field] = rawRelations[type] || [];
+    }
+    return result;
+  });
 
   if (!doc) return notFound(res, 'Tour not found');
 
-  const rawRelations = await populateGraphRelations(doc._id);
-
-  const fields = RELATION_MAP.Tour.relations;
-
-  // Apply relations
-  for (const [field, cfg] of Object.entries(fields)) {
-    const type = cfg.type; // "Blog", "Destination",   etc.
-    doc[field] = rawRelations[type] || [];
-  }
-
+  cache.setCacheHeaders(res, DETAIL_TTL);
   return ok(res, doc);
 });
 
@@ -446,6 +457,8 @@ exports.create = asyncHandler(async (req, res) => {
 
   doc.relations = await populateGraphRelations(doc._id);
 
+  invalidateTourCaches(doc.slug);
+
   return created(res, doc.toObject());
 });
 
@@ -611,6 +624,8 @@ exports.update = asyncHandler(async (req, res) => {
     Object.assign(withRelations, relationValues);
   }
 
+  invalidateTourCaches(withRelations.slug);
+
   return ok(res, withRelations);
 });
 
@@ -638,6 +653,8 @@ exports.updateStatus = asyncHandler(async (req, res) => {
   // ⭐ Add universal relations
   doc.relations = await populateGraphRelations(doc._id);
 
+  invalidateTourCaches(doc.slug);
+
   return ok(res, doc);
 });
 
@@ -649,6 +666,8 @@ exports.remove = asyncHandler(async (req, res) => {
 
   const doc = await Tour.findByIdAndDelete(id).lean();
   if (!doc) return notFound(res, 'Tour not found');
+
+  invalidateTourCaches(doc.slug);
 
   return ok(res, { id });
 });
@@ -699,6 +718,7 @@ exports.duplicate = asyncHandler(async (req, res) => {
   const duplicate = await Tour.create(duplicatedData);
 
   duplicate.relations = await populateGraphRelations(duplicate._id);
+  invalidateTourCaches(duplicate.slug);
 
   return created(res, {
     message: 'Tour duplicated successfully',
@@ -708,50 +728,55 @@ exports.duplicate = asyncHandler(async (req, res) => {
 
 exports.searchHome = asyncHandler(async (req, res) => {
   const { page, limit, skip } = parsePagination(req);
+  const qs = new URLSearchParams(req.query || {}).toString() || 'all';
+  const cacheKey = `tours:search-home:${qs}`;
 
-  const where = { status: 'published' };
+  const payload = await cache.getOrSet(cacheKey, LIST_TTL, async () => {
+    const where = { status: 'published' };
 
-  // PLACE
-  if (req.query.place) {
-    where.place = new RegExp(String(req.query.place).trim(), 'i');
-  }
-
-  // DURATION: "7+days" => totalDays >= 7
-  if (req.query.duration) {
-    const num = parseInt(String(req.query.duration));
-    if (!isNaN(num)) {
-      where['details.totalDays'] = { $gte: num };
+    // PLACE
+    if (req.query.place) {
+      where.place = new RegExp(String(req.query.place).trim(), 'i');
     }
-  }
 
-  // CATEGORY
-  if (req.query.category) {
-    where.tourType = String(req.query.category).trim();
-  }
+    // DURATION: "7+days" => totalDays >= 7
+    if (req.query.duration) {
+      const num = parseInt(String(req.query.duration));
+      if (!isNaN(num)) {
+        where['details.totalDays'] = { $gte: num };
+      }
+    }
 
-  // BUDGET
-  const min = req.query.min ? Number(req.query.min) : null;
-  const max = req.query.max ? Number(req.query.max) : null;
-  if (min || max) {
-    where['details.pricePerPerson'] = {};
-    if (min) where['details.pricePerPerson'].$gte = min;
-    if (max) where['details.pricePerPerson'].$lte = max;
-  }
+    // CATEGORY
+    if (req.query.category) {
+      where.tourType = String(req.query.category).trim();
+    }
 
-  // EXECUTE PAGINATED FIND
-  const [items, total] = await Promise.all([
-    Tour.find(where).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    // BUDGET
+    const min = req.query.min ? Number(req.query.min) : null;
+    const max = req.query.max ? Number(req.query.max) : null;
+    if (min || max) {
+      where['details.pricePerPerson'] = {};
+      if (min) where['details.pricePerPerson'].$gte = min;
+      if (max) where['details.pricePerPerson'].$lte = max;
+    }
 
-    Tour.countDocuments(where),
-  ]);
+    const [items, total] = await Promise.all([
+      Tour.find(where).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Tour.countDocuments(where),
+    ]);
 
-  return ok(res, {
-    items,
-    page,
-    limit,
-    total,
-    totalPages: Math.ceil(total / limit),
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
   });
+
+  cache.setCacheHeaders(res, LIST_TTL);
+  return ok(res, payload);
 });
 
 exports.searchTours = asyncHandler(async (req, res) => {
@@ -854,18 +879,26 @@ exports.searchTours = asyncHandler(async (req, res) => {
     .filter((s) => !('$skip' in s) && !('$limit' in s) && !('$sort' in s))
     .concat({ $count: 'total' });
 
-  const [items, countResult] = await Promise.all([
-    Tour.aggregate(pipeline),
-    Tour.aggregate(countPipeline),
-  ]);
+  const qs = new URLSearchParams(req.query || {}).toString() || 'all';
+  const cacheKey = `tours:search:${qs}`;
 
-  const total = countResult[0]?.total || 0;
+  const payload = await cache.getOrSet(cacheKey, LIST_TTL, async () => {
+    const [items, countResult] = await Promise.all([
+      Tour.aggregate(pipeline),
+      Tour.aggregate(countPipeline),
+    ]);
 
-  return ok(res, {
-    items,
-    page,
-    limit,
-    total,
-    totalPages: Math.ceil(total / limit),
+    const total = countResult[0]?.total || 0;
+
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
   });
+
+  cache.setCacheHeaders(res, LIST_TTL);
+  return ok(res, payload);
 });

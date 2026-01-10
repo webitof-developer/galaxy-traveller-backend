@@ -3,6 +3,7 @@
 const mongoose = require('mongoose');
 const Blog = require('../models/Blog');
 const User = require('../models/User');
+const cache = require('../lib/cache/cache');
 
 const {
   ok,
@@ -109,52 +110,61 @@ const syncRelations = async (id, incoming, defs, fromType) => {
   return fieldValues;
 };
 
+const LIST_TTL = 300; // lists: 2–5 minutes
+const DETAIL_TTL = 900; // detail: 10–30 minutes
+
 // ---------- PUBLIC LISTING ----------
 exports.listPublished = asyncHandler(async (req, res) => {
-  const { page, limit = 15, skip } = parsePagination(req);
+  const qs = new URLSearchParams(req.query || {}).toString() || 'all';
+  const cacheKey = `blogs:list:${qs}`;
+  const payload = await cache.getOrSet(cacheKey, LIST_TTL, async () => {
+    const { page, limit = 15, skip } = parsePagination(req);
 
-  const filters = buildCommonFilters(req);
-  const search = buildSearch(req.query.q);
+    const filters = buildCommonFilters(req);
+    const search = buildSearch(req.query.q);
 
-  const where = { status: 'published', ...(filters || {}) };
+    const where = { status: 'published', ...(filters || {}) };
 
-  let createdBy = null;
+    let createdBy = null;
 
-  if (req.query.id) {
-    const val = req.query.id;
+    if (req.query.id) {
+      const val = req.query.id;
 
-    if (mongoose.Types.ObjectId.isValid(val)) {
-      createdBy = await User.findById(val);
-    } else {
-      createdBy = await User.findOne({ slug: val });
+      if (mongoose.Types.ObjectId.isValid(val)) {
+        createdBy = await User.findById(val);
+      } else {
+        createdBy = await User.findOne({ slug: val });
+      }
+
+      if (createdBy) {
+        where.createdBy = createdBy._id;
+      }
     }
 
-    if (createdBy) {
-      where.createdBy = createdBy._id;
+    if (search) Object.assign(where, search);
+
+    const sort = { updatedAt: -1 };
+
+    const [items, total] = await Promise.all([
+      Blog.find(where).sort(sort).skip(skip).limit(limit).lean(),
+      Blog.countDocuments(where),
+    ]);
+
+    for (const blog of items) {
+      blog.relations = await populateGraphRelations(blog._id);
     }
-  }
 
-  if (search) Object.assign(where, search);
-
-  const sort = { updatedAt: -1 };
-
-  const [items, total] = await Promise.all([
-    Blog.find(where).sort(sort).skip(skip).limit(limit).lean(),
-    Blog.countDocuments(where),
-  ]);
-
-  // Add graph relations for each item (IDs only → lightweight)
-  for (const blog of items) {
-    blog.relations = await populateGraphRelations(blog._id);
-  }
-
-  return ok(res, {
-    items,
-    page,
-    limit,
-    total,
-    totalPages: Math.ceil(total / limit),
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
   });
+
+  cache.setCacheHeaders(res, LIST_TTL);
+  return ok(res, payload);
 });
 
 // ---------- PUBLIC SINGLE ----------
@@ -162,24 +172,31 @@ exports.getBySlugOrId = asyncHandler(async (req, res) => {
   const p = req.params.idOrSlug;
   const where = isObjectId(p) ? { _id: p } : { slug: String(p).toLowerCase() };
 
-  const doc = await Blog.findOne({ ...where, status: 'published' })
-    .populate('categories')
-    .populate('tagMonths')
-    .populate('createdBy')
-    .lean();
+  const cacheKey = `blogs:slug:${where._id || where.slug}`;
+  const doc = await cache.getOrSet(cacheKey, DETAIL_TTL, async () => {
+    const result = await Blog.findOne({ ...where, status: 'published' })
+      .populate('categories')
+      .populate('tagMonths')
+      .populate('createdBy')
+      .lean();
+
+    if (!result) return null;
+
+    const rawRelations = await populateGraphRelations(result._id);
+
+    const fields = RELATION_MAP.Blog.relations;
+
+    for (const [field, cfg] of Object.entries(fields)) {
+      const type = cfg.type; // "Blog", "Destination",   etc.
+      result[field] = rawRelations[type] || [];
+    }
+
+    return result;
+  });
 
   if (!doc) return notFound(res, 'Blog not found');
 
-  const rawRelations = await populateGraphRelations(doc._id);
-
-  const fields = RELATION_MAP.Blog.relations;
-
-  // Apply relations
-  for (const [field, cfg] of Object.entries(fields)) {
-    const type = cfg.type; // "Blog", "Destination",   etc.
-    doc[field] = rawRelations[type] || [];
-  }
-
+  cache.setCacheHeaders(res, DETAIL_TTL);
   return ok(res, doc);
 });
 
@@ -325,6 +342,9 @@ exports.create = asyncHandler(async (req, res) => {
 
   doc.relations = await populateGraphRelations(doc._id);
 
+  cache.del('blogs:list:all');
+  if (doc.slug) cache.del(`blogs:slug:${doc.slug}`);
+
   return created(res, doc.toObject());
 });
 
@@ -387,6 +407,9 @@ exports.update = asyncHandler(async (req, res) => {
     Object.assign(updatedDoc, relationValues);
   }
 
+  cache.del('blogs:list:all');
+  if (updatedDoc.slug) cache.del(`blogs:slug:${updatedDoc.slug}`);
+
   return ok(res, updatedDoc);
 });
 
@@ -410,6 +433,9 @@ exports.updateStatus = asyncHandler(async (req, res) => {
 
   doc.relations = await populateGraphRelations(doc._id);
 
+  cache.del('blogs:list:all');
+  if (doc.slug) cache.del(`blogs:slug:${doc.slug}`);
+
   return ok(res, doc);
 });
 
@@ -420,6 +446,9 @@ exports.remove = asyncHandler(async (req, res) => {
 
   const doc = await Blog.findByIdAndDelete(id).lean();
   if (!doc) return notFound(res, 'Blog not found');
+
+  cache.del('blogs:list:all');
+  if (doc.slug) cache.del(`blogs:slug:${doc.slug}`);
 
   return ok(res, { id });
 });

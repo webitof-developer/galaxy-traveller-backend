@@ -8,6 +8,7 @@ const {
   fail,
   asyncHandler,
 } = require("../utils/respond");
+const cache = require("../lib/cache/cache");
 
 const {
   isObjectId,
@@ -21,6 +22,12 @@ const {
 
 const { populateGraphRelations } = require("../utils/relationHelper");
 const { getRelationFields, RELATION_MAP } = require("../utils/relationMapper");
+const LIST_TTL = 300; // lists: 2–5 minutes
+const DETAIL_TTL = 900; // detail: 10–30 minutes
+const invalidateDestinationCaches = (slug) => {
+  cache.del("destinations:list:all");
+  if (slug) cache.del(`destinations:slug:${slug}`);
+};
 
 // Build filters from query
 const buildFilters = (req) => {
@@ -69,67 +76,76 @@ function updateSubSchemaFields(updateData, subSchemaKey, schemaFields) {
 
 // ---------- Public ----------
 exports.listPublished = asyncHandler(async (req, res) => {
-  const { page, limit, skip } = parsePagination(req);
-  const sort = latestSort(req.query.sort);
-  const where = { status: "published", ...buildFilters(req) };
-  const search = buildSearch(req.query.q, ["title", "slug", "description"]);
-  if (search) Object.assign(where, search);
+  const qs = new URLSearchParams(req.query || {}).toString() || "all";
+  const cacheKey = `destinations:list:${qs}`;
 
-  const [items, total] = await Promise.all([
-    Destination.find(where).sort(sort).skip(skip).limit(limit).lean(),
-    Destination.countDocuments(where),
-  ]);
+  const payload = await cache.getOrSet(cacheKey, LIST_TTL, async () => {
+    const { page, limit, skip } = parsePagination(req);
+    const sort = latestSort(req.query.sort);
+    const where = { status: "published", ...buildFilters(req) };
+    const search = buildSearch(req.query.q, ["title", "slug", "description"]);
+    if (search) Object.assign(where, search);
 
-  const rawRelations = await populateGraphRelations(items._id);
+    const [items, total] = await Promise.all([
+      Destination.find(where).sort(sort).skip(skip).limit(limit).lean(),
+      Destination.countDocuments(where),
+    ]);
 
-  const fields = RELATION_MAP.Destination.relations;
+    const fields = RELATION_MAP.Destination.relations;
 
-  for (const item of items) {
-    const rawRelations = await populateGraphRelations(item._id);
-    // rawRelations = { Blog: [...], Destination: [...],  Tour: [...] }
-
-    // normalize into tour fields
-    for (const [field, cfg] of Object.entries(fields)) {
-      const type = cfg.type; // "Blog", "Destination", etc.
-      item[field] = rawRelations[type] || [];
+    for (const item of items) {
+      const rawRelations = await populateGraphRelations(item._id);
+      for (const [field, cfg] of Object.entries(fields)) {
+        const type = cfg.type; // "Blog", "Destination", etc.
+        item[field] = rawRelations[type] || [];
+      }
     }
-  }
 
-  return ok(res, {
-    items,
-    page,
-    limit,
-    total,
-    totalPages: Math.ceil(total / limit),
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
   });
+
+  cache.setCacheHeaders(res, LIST_TTL);
+  return ok(res, payload);
 });
 
 exports.getBySlugOrId = asyncHandler(async (req, res) => {
   const p = String(req.params.idOrSlug || "");
   const where = isObjectId(p) ? { _id: p } : { slug: p.toLowerCase() };
 
-  const doc = await Destination.findOne({
-    ...where,
-    status: "published",
-  })
-    .populate("blogs")
-    .populate("tours")
-    .populate("tagMonths")
-    .lean();
-  console.log(doc);
+  const cacheKey = `destinations:slug:${where._id || where.slug}`;
+  const doc = await cache.getOrSet(cacheKey, DETAIL_TTL, async () => {
+    const result = await Destination.findOne({
+      ...where,
+      status: "published",
+    })
+      .populate("blogs")
+      .populate("tours")
+      .populate("tagMonths")
+      .lean();
+
+    if (!result) return null;
+
+    const rawRelations = await populateGraphRelations(result._id);
+
+    const fields = RELATION_MAP.Destination.relations;
+
+    for (const [field, cfg] of Object.entries(fields)) {
+      const type = cfg.type; // "Blog", "Destination",   etc.
+      result[field] = rawRelations[type] || [];
+    }
+
+    return result;
+  });
 
   if (!doc) return notFound(res, "Destination not found");
 
-  const rawRelations = await populateGraphRelations(doc._id);
-
-  const fields = RELATION_MAP.Destination.relations;
-
-  // Apply relations
-  for (const [field, cfg] of Object.entries(fields)) {
-    const type = cfg.type; // "Blog", "Destination",   etc.
-    doc[field] = rawRelations[type] || [];
-  }
-
+  cache.setCacheHeaders(res, DETAIL_TTL);
   return ok(res, doc);
 });
 
@@ -191,6 +207,8 @@ exports.create = asyncHandler(async (req, res) => {
   // Add relations section
   doc.relations = await populateGraphRelations(doc._id);
 
+  invalidateDestinationCaches(doc.slug);
+
   return created(res, doc.toObject());
 });
 
@@ -212,6 +230,7 @@ exports.update = asyncHandler(async (req, res) => {
 
   doc.relations = await populateGraphRelations(doc._id);
 
+  invalidateDestinationCaches(doc.slug);
   return ok(res, doc);
 });
 
@@ -234,6 +253,7 @@ exports.updateStatus = asyncHandler(async (req, res) => {
 
   doc.relations = await populateGraphRelations(doc._id);
 
+  invalidateDestinationCaches(doc.slug);
   return ok(res, doc);
 });
 
@@ -244,6 +264,7 @@ exports.remove = asyncHandler(async (req, res) => {
   const doc = await Destination.findByIdAndDelete(id).lean();
   if (!doc) return notFound(res, "Destination not found");
 
+  invalidateDestinationCaches(doc.slug);
   return ok(res, { id });
 });
 
@@ -268,6 +289,7 @@ exports.duplicate = asyncHandler(async (req, res) => {
   const duplicate = await Destination.create(duplicatedData);
   duplicate.relations = await populateGraphRelations(duplicate._id);
 
+  invalidateDestinationCaches(duplicate.slug);
   return created(res, {
     message: "Destination duplicated successfully",
     duplicate,
