@@ -23,6 +23,7 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5000',
   'https://admin.subhajitmondal.com',
+  'https://galaxy-traveller-frontend.vercel.app',
   'https://gt.subhajitmondal.com',
 ];
 
@@ -103,7 +104,11 @@ Cached endpoints (public read-heavy):
 // Content Management
 app.use('/api/blog', rateLimitPublic, require('./routes/blogRoutes'));
 app.use('/api/categories', rateLimitPublic, require('./routes/categoryRoutes'));
-app.use('/api/destinations', rateLimitPublic, require('./routes/destinationRoutes'));
+app.use(
+  '/api/destinations',
+  rateLimitPublic,
+  require('./routes/destinationRoutes'),
+);
 app.use('/api/enquiries', require('./routes/enquiryRoutes'));
 app.use('/api/lead', require('./routes/leadRoutes'));
 app.use('/api/months', rateLimitPublic, require('./routes/monthRoutes'));
@@ -118,10 +123,18 @@ app.use(
   rateLimitPublic,
   require('./routes/destinationListRoutes'),
 );
-app.use('/api/site_features', rateLimitPublic, require('./routes/featuresRoutes'));
+app.use(
+  '/api/site_features',
+  rateLimitPublic,
+  require('./routes/featuresRoutes'),
+);
 app.use('/api/site_global', rateLimitPublic, require('./routes/globalRoutes'));
 app.use('/api/review', rateLimitPublic, require('./routes/reviewRoutes'));
-app.use('/api/site_heroslides', rateLimitPublic, require('./routes/heroSlideRoutes'));
+app.use(
+  '/api/site_heroslides',
+  rateLimitPublic,
+  require('./routes/heroSlideRoutes'),
+);
 
 // Main
 app.use(['/api/home', '/api/search'], rateLimitPublic);
@@ -172,7 +185,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-
 app.get('/health/ready', (req, res) => {
   const mongoState = mongoose.connection.readyState;
 
@@ -185,9 +197,7 @@ app.get('/health/ready', (req, res) => {
   };
 
   const isReady =
-    mongoState === 1 &&
-    checks.env.MONGO_URI &&
-    checks.env.GCS_BUCKET;
+    mongoState === 1 && checks.env.MONGO_URI && checks.env.GCS_BUCKET;
 
   if (!isReady) {
     return res.status(503).json({
@@ -201,7 +211,6 @@ app.get('/health/ready', (req, res) => {
     checks,
   });
 });
-
 
 app.get('/', (req, res) => {
   res.status(200).send('👋 Hello! GalaxyTravellers backend is live 🚀');
